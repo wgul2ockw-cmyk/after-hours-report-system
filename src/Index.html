@@ -1,0 +1,341 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>รายงานตรวจรักษานอกเวลา</title>
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+Thai:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --ink: #1a1a2e;
+    --muted: #6b7280;
+    --line: #e8e8ef;
+    --card: #ffffff;
+    --accent: #5b5bd6;
+    --accent-2: #8b5cf6;
+    --ok: #16a34a;
+    --radius: 20px;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: 'Noto Sans Thai', sans-serif;
+    color: var(--ink);
+    background: #fafafc;
+    min-height: 100vh;
+    overflow-x: hidden;
+  }
+  /* jovey-style gradient orb */
+  .orb {
+    position: fixed; top: -180px; right: -120px; width: 480px; height: 480px;
+    border-radius: 50%;
+    background: conic-gradient(from 180deg, #ff8a8a, #ffd28a, #a8f0b8, #8ad2ff, #c99aff, #ff8ad6, #ff8a8a);
+    filter: blur(90px); opacity: .35; pointer-events: none; z-index: 0;
+  }
+  .orb2 {
+    position: fixed; bottom: -220px; left: -160px; width: 420px; height: 420px;
+    border-radius: 50%;
+    background: conic-gradient(from 0deg, #8ad2ff, #c99aff, #a8f0b8, #8ad2ff);
+    filter: blur(100px); opacity: .25; pointer-events: none; z-index: 0;
+  }
+  .wrap { position: relative; z-index: 1; max-width: 560px; margin: 0 auto; padding: 32px 20px 64px; }
+  header { text-align: center; margin-bottom: 28px; }
+  header h1 { font-size: 1.45rem; font-weight: 700; letter-spacing: -.01em; }
+  header p { color: var(--muted); font-size: .95rem; margin-top: 6px; }
+
+  .tabs {
+    display: flex; background: #eeeef4; border-radius: 999px; padding: 5px; margin-bottom: 24px;
+  }
+  .tabs button {
+    flex: 1; border: 0; background: transparent; padding: 11px 0; border-radius: 999px;
+    font-family: inherit; font-size: 1rem; font-weight: 600; color: var(--muted); cursor: pointer;
+    transition: all .18s ease;
+  }
+  .tabs button.active { background: #fff; color: var(--ink); box-shadow: 0 2px 10px rgba(20,20,60,.08); }
+
+  .card {
+    background: var(--card); border: 1px solid var(--line); border-radius: var(--radius);
+    padding: 26px 22px; box-shadow: 0 8px 30px rgba(20,20,60,.05);
+  }
+  .field { margin-bottom: 18px; }
+  .field label { display: block; font-size: .9rem; font-weight: 600; margin-bottom: 7px; }
+  .field .hint { font-weight: 400; color: var(--muted); font-size: .8rem; margin-left: 6px; }
+  input[type="date"], select, input[type="text"] {
+    width: 100%; padding: 12px 14px; font-family: inherit; font-size: 1rem;
+    border: 1.5px solid var(--line); border-radius: 14px; background: #fff; color: var(--ink);
+    outline: none; transition: border-color .15s;
+  }
+  input:focus, select:focus { border-color: var(--accent); }
+  .thai-date { color: var(--accent); font-size: .85rem; margin-top: 6px; font-weight: 500; }
+
+  .btn {
+    width: 100%; padding: 14px; border: 0; border-radius: 16px; cursor: pointer;
+    font-family: inherit; font-size: 1.05rem; font-weight: 700; color: #fff;
+    background: linear-gradient(135deg, var(--accent), var(--accent-2));
+    box-shadow: 0 6px 20px rgba(91,91,214,.35);
+    transition: transform .12s ease, box-shadow .12s ease;
+  }
+  .btn:hover { transform: translateY(-1px); }
+  .btn:disabled { opacity: .6; cursor: wait; transform: none; }
+  .btn-ghost {
+    background: #f2f2f8; color: var(--ink); box-shadow: none; font-weight: 600;
+  }
+  .link-btn {
+    display: inline-block; margin-top: 14px; padding: 13px 22px; border-radius: 14px;
+    background: var(--ink); color: #fff; text-decoration: none; font-weight: 600;
+  }
+
+  .adddoc { display: none; gap: 8px; margin-top: 10px; }
+  .adddoc.show { display: flex; }
+  .adddoc input { flex: 1; }
+  .adddoc button { width: auto; padding: 0 18px; font-size: .95rem; }
+
+  .success { text-align: center; padding: 10px 0; }
+  .success .big { font-size: 3rem; }
+  .success h2 { font-size: 1.2rem; margin-top: 8px; }
+  .success p { color: var(--muted); font-size: .92rem; margin-top: 8px; line-height: 1.55; }
+
+  .pending-item {
+    display: flex; align-items: center; justify-content: space-between; gap: 10px;
+    border: 1.5px solid var(--line); border-radius: 16px; padding: 14px 16px; margin-bottom: 10px;
+  }
+  .pending-item .meta { font-size: .95rem; line-height: 1.45; }
+  .pending-item .meta .sub { color: var(--muted); font-size: .82rem; }
+  .pending-item button {
+    border: 0; border-radius: 12px; padding: 10px 16px; cursor: pointer;
+    font-family: inherit; font-weight: 700; font-size: .9rem; color: #fff;
+    background: linear-gradient(135deg, var(--accent), var(--accent-2)); white-space: nowrap;
+  }
+  .empty { text-align: center; color: var(--muted); font-size: .92rem; padding: 18px 0; }
+
+  .err-box {
+    margin-top: 12px; padding: 13px 15px; border-radius: 14px;
+    background: #fef2f2; border: 1.5px solid #fecaca; color: #b91c1c;
+    font-size: .9rem; line-height: 1.6; white-space: pre-line;
+  }
+
+  .row-gap { display: flex; gap: 8px; }
+  .row-gap input { flex: 1; }
+  .row-gap .btn { width: auto; padding: 0 20px; font-size: .95rem; }
+
+  .toast {
+    position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);
+    background: var(--ink); color: #fff; padding: 12px 20px; border-radius: 14px;
+    font-size: .92rem; opacity: 0; pointer-events: none; transition: opacity .25s; z-index: 50;
+    max-width: 90vw; text-align: center;
+  }
+  .toast.show { opacity: 1; }
+
+  .spinner {
+    display: inline-block; width: 18px; height: 18px; border: 2.5px solid rgba(255,255,255,.4);
+    border-top-color: #fff; border-radius: 50%; animation: spin .7s linear infinite;
+    vertical-align: -3px; margin-right: 8px;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .hidden { display: none !important; }
+  footer { text-align: center; color: #b6b6c6; font-size: .78rem; margin-top: 30px; }
+</style>
+</head>
+<body>
+<div class="orb"></div><div class="orb2"></div>
+<div class="wrap">
+  <header>
+    <h1>รายงานตรวจรักษานอกเวลา</h1>
+    <p>สร้างชีต · กรอกรายชื่อผู้ป่วย · ส่งเป็น PDF เข้าระบบอัตโนมัติ</p>
+  </header>
+
+  <div class="tabs">
+    <button id="tabCreate" class="active" onclick="showTab('create')">① สร้างรายงาน</button>
+    <button id="tabSubmit" onclick="showTab('submit')">② ส่งรายงาน</button>
+  </div>
+
+  <!-- ============ CREATE ============ -->
+  <div id="paneCreate" class="card">
+    <div id="createForm">
+      <div class="field">
+        <label>วันที่ตรวจ</label>
+        <input type="date" id="fDate">
+        <div class="thai-date" id="thaiDate"></div>
+      </div>
+      <div class="field">
+        <label>ช่วงเวลา <span class="hint">ระบบเลือกให้ตามเวลาปัจจุบัน — แก้ได้</span></label>
+        <select id="fTime"></select>
+      </div>
+      <div class="field">
+        <label>ชื่อแพทย์</label>
+        <select id="fDoctor"></select>
+        <div class="adddoc" id="addDocBox">
+          <input type="text" id="newDoctor" placeholder="เช่น นพ.สมชาย ใจดี เลข ว. 12345">
+          <button class="btn" onclick="saveDoctor()">บันทึก</button>
+        </div>
+      </div>
+      <div class="field">
+        <label>ศูนย์แพทย์</label>
+        <select id="fCenter"></select>
+      </div>
+      <button class="btn" id="btnCreate" onclick="createReport()">สร้างชีตรายงาน</button>
+    </div>
+
+    <div id="createDone" class="success hidden">
+      <div class="big">📝</div>
+      <h2>สร้างชีตเรียบร้อย</h2>
+      <p>เปิดชีตแล้วกรอกรายชื่อผู้ป่วย (ชื่อ / อายุ / HN / Diag)<br>เสร็จแล้วกลับมาที่แท็บ <b>② ส่งรายงาน</b></p>
+      <a class="link-btn" id="sheetLink" target="_blank" rel="noopener">เปิดชีตของคุณ ↗</a>
+      <p style="margin-top:16px"><button class="btn btn-ghost" onclick="resetCreate()">สร้างรายงานใหม่</button></p>
+    </div>
+  </div>
+
+  <!-- ============ SUBMIT ============ -->
+  <div id="paneSubmit" class="card hidden">
+    <div id="submitForm">
+      <div class="field">
+        <label>วางลิงก์ชีตรายงานของคุณ</label>
+        <div class="row-gap">
+          <input type="text" id="pasteUrl" placeholder="https://docs.google.com/spreadsheets/d/…">
+          <button class="btn" id="btnPaste" onclick="submitByUrl()">ส่ง</button>
+        </div>
+        <div class="err-box hidden" id="submitErr"></div>
+      </div>
+    </div>
+
+    <div id="submitDone" class="success hidden">
+      <div class="big">✅</div>
+      <h2>ส่งรายงานเรียบร้อย</h2>
+      <p id="submitMsg"></p>
+      <a class="link-btn" id="pdfLink" target="_blank" rel="noopener">เปิด PDF ↗</a>
+      <p style="margin-top:16px"><button class="btn btn-ghost" onclick="resetSubmit()">ส่งรายงานอื่น</button></p>
+    </div>
+  </div>
+
+  <footer>ระบบฟรี · ไฟล์ทั้งหมดจัดเก็บอัตโนมัติใน Google Drive กลาง</footer>
+</div>
+<div class="toast" id="toast"></div>
+
+<script>
+var THAI_MONTHS = ['ม.ค.','ก.พ.','มี.ค.','เม.ย.','พ.ค.','มิ.ย.','ก.ค.','ส.ค.','ก.ย.','ต.ค.','พ.ย.','ธ.ค.'];
+var ADD_NEW = '__ADD_NEW__';
+
+function gs(fn) {
+  var args = Array.prototype.slice.call(arguments, 1);
+  return new Promise(function (resolve, reject) {
+    var runner = google.script.run
+      .withSuccessHandler(resolve)
+      .withFailureHandler(function (e) { reject(e); });
+    runner[fn].apply(runner, args);
+  });
+}
+function $(id) { return document.getElementById(id); }
+function toast(msg) {
+  var t = $('toast'); t.textContent = msg; t.classList.add('show');
+  setTimeout(function () { t.classList.remove('show'); }, 3500);
+}
+function busy(btn, on, label) {
+  btn.disabled = on;
+  btn.innerHTML = on ? '<span class="spinner"></span>กำลังทำงาน…' : label;
+}
+function thaiDate(iso) {
+  if (!iso) return '';
+  var p = iso.split('-');
+  return Number(p[2]) + ' ' + THAI_MONTHS[Number(p[1]) - 1] + ' ' + (Number(p[0]) + 543);
+}
+// auto-pick the time slot from the current clock (still editable):
+// ≥16:00 → "16.00 - 20.00" · <12:00 → "8.00 - 12.00" · 12:00–15:59 → "8.00 - 16.00"
+function autoPickSlot(hour, slots) {
+  var want = hour >= 16 ? '16.00 - 20.00' : (hour < 12 ? '8.00 - 12.00' : '8.00 - 16.00');
+  var idx = slots.indexOf(want);
+  $('fTime').selectedIndex = idx >= 0 ? idx : 0;
+}
+function fillSelect(sel, items, extra) {
+  sel.innerHTML = '';
+  items.forEach(function (v) {
+    var o = document.createElement('option'); o.value = v; o.textContent = v; sel.appendChild(o);
+  });
+  if (extra) {
+    var o = document.createElement('option'); o.value = ADD_NEW; o.textContent = '＋ เพิ่มชื่อใหม่…'; sel.appendChild(o);
+  }
+}
+
+// ---- init ----
+var INIT = null;
+gs('getInitData').then(function (d) {
+  INIT = d;
+  $('fDate').value = d.todayISO;
+  $('thaiDate').textContent = thaiDate(d.todayISO);
+  fillSelect($('fTime'), d.timeslots);
+  autoPickSlot(d.nowHour, d.timeslots);
+  fillSelect($('fDoctor'), d.doctors, true);
+  fillSelect($('fCenter'), d.centers);
+}).catch(function (e) { toast('โหลดข้อมูลไม่สำเร็จ: ' + e.message); });
+
+$('fDate').addEventListener('change', function () { $('thaiDate').textContent = thaiDate(this.value); });
+$('fDoctor').addEventListener('change', function () {
+  $('addDocBox').classList.toggle('show', this.value === ADD_NEW);
+});
+
+// ---- tabs ----
+function showTab(t) {
+  $('tabCreate').classList.toggle('active', t === 'create');
+  $('tabSubmit').classList.toggle('active', t === 'submit');
+  $('paneCreate').classList.toggle('hidden', t !== 'create');
+  $('paneSubmit').classList.toggle('hidden', t !== 'submit');
+}
+
+// ---- create ----
+function saveDoctor() {
+  var name = $('newDoctor').value.trim();
+  if (!name) return toast('กรุณากรอกชื่อแพทย์');
+  gs('addDoctor', name).then(function (doctors) {
+    fillSelect($('fDoctor'), doctors, true);
+    $('fDoctor').value = name;
+    $('addDocBox').classList.remove('show');
+    toast('บันทึกชื่อแพทย์แล้ว');
+  }).catch(function (e) { toast(e.message); });
+}
+
+function createReport() {
+  var doctor = $('fDoctor').value;
+  if (doctor === ADD_NEW) return toast('กรุณาบันทึกชื่อแพทย์ใหม่ก่อน');
+  var btn = $('btnCreate');
+  busy(btn, true, 'สร้างชีตรายงาน');
+  gs('createReport', $('fDate').value, $('fTime').value, doctor, $('fCenter').value)
+    .then(function (r) {
+      $('sheetLink').href = r.sheetUrl;
+      $('createForm').classList.add('hidden');
+      $('createDone').classList.remove('hidden');
+    })
+    .catch(function (e) { toast(e.message); })
+    .finally(function () { busy(btn, false, 'สร้างชีตรายงาน'); });
+}
+function resetCreate() {
+  $('createDone').classList.add('hidden');
+  $('createForm').classList.remove('hidden');
+}
+
+// ---- submit (link-only) ----
+function submitByUrl() {
+  var url = $('pasteUrl').value.trim();
+  $('submitErr').classList.add('hidden');
+  if (!url) return toast('กรุณาวางลิงก์ชีต');
+  var btn = $('btnPaste'), label = btn.textContent;
+  busy(btn, true, label);
+  gs('submitReport', url).then(function (r) {
+    $('submitMsg').textContent = r.already
+      ? 'รายงานนี้ถูกส่งไปแล้ว — เปิด PDF เดิมได้เลย'
+      : 'บันทึกไฟล์ ' + r.fileName + ' เข้า Drive เรียบร้อย';
+    $('pdfLink').href = r.pdfUrl;
+    $('submitForm').classList.add('hidden');
+    $('submitDone').classList.remove('hidden');
+  }).catch(function (e) {
+    var box = $('submitErr');
+    box.textContent = e.message;
+    box.classList.remove('hidden');
+  }).finally(function () { busy(btn, false, label); });
+}
+function resetSubmit() {
+  $('submitDone').classList.add('hidden');
+  $('submitForm').classList.remove('hidden');
+  $('pasteUrl').value = '';
+  $('submitErr').classList.add('hidden');
+}
+</script>
+</body>
+</html>
