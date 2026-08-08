@@ -365,10 +365,17 @@ function registrySheet_() {
 function configSheet_() {
   return SpreadsheetApp.openById(PropertiesService.getScriptProperties().getProperty('REGISTRY_ID')).getSheetByName('Config');
 }
+var REGISTRY_COLS = 11; // A..K : sheetId..pdfUrl, patients, amount
 function registryRows_() {
   var sh = registrySheet_();
   var n = sh.getLastRow();
-  return n < 2 ? [] : sh.getRange(2, 1, n - 1, 9).getValues();
+  if (n < 2) return [];
+  var cols = Math.min(REGISTRY_COLS, sh.getMaxColumns());
+  var vals = sh.getRange(2, 1, n - 1, cols).getValues();
+  for (var i = 0; i < vals.length; i++) {
+    while (vals[i].length < REGISTRY_COLS) vals[i].push('');
+  }
+  return vals;
 }
 function findRegistryRow_(sheetId) {
   var rows = registryRows_();
@@ -451,6 +458,54 @@ function monthlyFolder_() {
   var f = getOrCreateFolder_(DriveApp.getFolderById(ROOT_FOLDER_ID), 'หลักฐานการจ่ายเงิน');
   props.setProperty('MONTHLY_ID', f.getId());
   return f;
+}
+
+/**
+ * Backfill missing patient counts/amounts from the source sheets, then rebuild
+ * every month+center payment-evidence tab found in the Registry.
+ * Run manually from the editor any time; safe to re-run.
+ */
+function rebuildMonthlyReports() {
+  var sh = registrySheet_();
+  sh.getRange(1, 10, 1, 2).setValues([['patients', 'amount']]);
+
+  // ---- backfill ----
+  var rows = registryRows_();
+  var filled = 0, missing = 0;
+  for (var i = 0; i < rows.length; i++) {
+    var r = rows[i];
+    if (r[7] !== 'submitted') continue;
+    if (Number(r[10])) continue;                 // already has an amount
+    try {
+      var src = SpreadsheetApp.openById(String(r[0])).getSheets()[0];
+      var n = countPatients_(src);
+      if (n > 0) {
+        sh.getRange(i + 2, 10, 1, 2).setValues([[n, n * RATE_PER_PATIENT]]);
+        rows[i][9] = n; rows[i][10] = n * RATE_PER_PATIENT;
+        filled++;
+      } else { missing++; }
+    } catch (e) { missing++; }                   // sheet deleted / unreadable
+  }
+  SpreadsheetApp.flush();
+
+  // ---- rebuild every month+center present ----
+  var seen = {}, urls = {};
+  rows = registryRows_();
+  for (var j = 0; j < rows.length; j++) {
+    var q = rows[j];
+    if (q[7] !== 'submitted' || !Number(q[10])) continue;
+    var iso = q[1] ? isoOf_(q[1]) : isoFromThai_(String(q[2]));
+    var center = String(q[5]);
+    var key = iso.slice(0, 7) + '|' + center;
+    if (seen[key]) continue;
+    seen[key] = true;
+    urls[key] = updateMonthlyReport_(iso, center);
+  }
+  var keys = Object.keys(seen);
+  Logger.log('Backfilled ' + filled + ' row(s), ' + missing + ' unreadable. Rebuilt ' +
+             keys.length + ' tab(s): ' + keys.join(', '));
+  for (var k = 0; k < keys.length; k++) Logger.log(keys[k] + ' -> ' + urls[keys[k]]);
+  return { filled: filled, missing: missing, tabs: keys.length };
 }
 
 /** Rebuild one month+center tab of the payment-evidence spreadsheet from the Registry. */
