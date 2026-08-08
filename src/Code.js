@@ -62,6 +62,11 @@ var DEFAULT_CENTERS = ['ศูนย์แพทย์หนองกุง', '�
 var DEFAULT_TIMESLOTS = ['8.00 - 12.00', '8.00 - 16.00', '16.00 - 20.00'];
 
 var THAI_MONTHS = ['ม.ค.','ก.พ.','มี.ค.','เม.ย.','พ.ค.','มิ.ย.','ก.ค.','ส.ค.','ก.ย.','ต.ค.','พ.ย.','ธ.ค.'];
+var THAI_MONTHS_FULL = ['มกราคม','กุมภาพันธ์','มีนาคม','เมษายน','พฤษภาคม','มิถุนายน','กรกฎาคม','สิงหาคม','กันยายน','ตุลาคม','พฤศจิกายน','ธันวาคม'];
+
+// ====== MONTHLY PAYMENT REPORT (หลักฐานการจ่ายเงิน) ======
+var HOSPITAL_NAME = 'โรงพยาบาลขอนแก่น';
+var RATE_PER_PATIENT = 50; // บาทต่อผู้ป่วย 1 ราย
 
 var PATIENT_START_ROW = 5;   // first patient row in template
 var PATIENT_MAX_ROWS  = 60;  // pre-numbered rows in template
@@ -82,6 +87,7 @@ function setup() {
   var pendingId = getOrCreateFolder_(root, 'Pending').getId();
   var archiveId = getOrCreateFolder_(root, 'Archive').getId();
   var pdfId     = getOrCreateFolder_(root, 'PDF').getId();
+  var monthlyId = getOrCreateFolder_(root, 'หลักฐานการจ่ายเงิน').getId();
 
   // Registry + Config spreadsheet
   var regId = props.getProperty('REGISTRY_ID');
@@ -94,7 +100,7 @@ function setup() {
       'sheetId','reportDateISO','reportDateThai','timeSlot','doctor','center','createdAt','status','pdfUrl'
     ]]).setFontWeight('bold');
     var cSheet = reg.insertSheet('Config');
-    cSheet.getRange(1, 1, 1, 3).setValues([['doctors','centers','timeslots']]).setFontWeight('bold');
+    cSheet.getRange(1, 1, 1, 4).setValues([['doctors','centers','timeslots','holidays']]).setFontWeight('bold');
     writeColumn_(cSheet, 1, DEFAULT_DOCTORS);
     writeColumn_(cSheet, 2, DEFAULT_CENTERS);
     writeColumn_(cSheet, 3, DEFAULT_TIMESLOTS);
@@ -109,7 +115,7 @@ function setup() {
 
   props.setProperties({
     PENDING_ID: pendingId, ARCHIVE_ID: archiveId, PDF_ID: pdfId,
-    REGISTRY_ID: regId, TEMPLATE_ID: tplId
+    MONTHLY_ID: monthlyId, REGISTRY_ID: regId, TEMPLATE_ID: tplId
   });
   Logger.log('Setup complete. Template: https://docs.google.com/spreadsheets/d/' + tplId);
 }
@@ -256,6 +262,9 @@ function submitReport(sheetIdOrUrl) {
 
     var lastRow = lastPatientRow_(sh);
     if (lastRow < PATIENT_START_ROW) throw new Error('ยังไม่มีรายชื่อผู้ป่วยในชีต — กรอกข้อมูลก่อนส่ง');
+    var patients = countPatients_(sh);
+    var amount = patients * RATE_PER_PATIENT;
+    var reportISO = reg ? isoOf_(reg.row[1]) : isoFromThai_(meta.dateThai);
 
     var blob;
     try {
@@ -282,15 +291,20 @@ function submitReport(sheetIdOrUrl) {
         src.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
         src.moveTo(DriveApp.getFolderById(props.getProperty('ARCHIVE_ID')));
       } catch (e) { /* non-fatal: PDF already filed */ }
-      registrySheet_().getRange(reg.index, 8, 1, 2).setValues([['submitted', pdfUrl]]);
+      registrySheet_().getRange(reg.index, 8, 1, 4).setValues([['submitted', pdfUrl, patients, amount]]);
     } else {
       // external sheet: we can't move/lock a file we don't own — just record the submission
       registrySheet_().appendRow([
-        sheetId, '', meta.dateThai, '', meta.doctor, meta.center,
-        Utilities.formatDate(new Date(), TZ, 'yyyy-MM-dd HH:mm:ss'), 'submitted', pdfUrl
+        sheetId, reportISO, meta.dateThai, '', meta.doctor, meta.center,
+        Utilities.formatDate(new Date(), TZ, 'yyyy-MM-dd HH:mm:ss'), 'submitted', pdfUrl, patients, amount
       ]);
     }
-    return { already: false, pdfUrl: pdfUrl, fileName: fileName };
+
+    // rebuild this month/center tab of the payment-evidence report (non-fatal on failure)
+    var reportUrl = '';
+    try { reportUrl = updateMonthlyReport_(reportISO, meta.center); } catch (e) { /* PDF already filed */ }
+
+    return { already: false, pdfUrl: pdfUrl, fileName: fileName, reportUrl: reportUrl };
   } finally { lock.releaseLock(); }
 }
 
@@ -366,16 +380,18 @@ function findRegistryRow_(sheetId) {
 function readConfig_() {
   var sh = configSheet_();
   var n = Math.max(sh.getLastRow() - 1, 0);
-  var vals = n ? sh.getRange(2, 1, n, 3).getValues() : [];
+  var vals = n ? sh.getRange(2, 1, n, 4).getValues() : [];
   var col = function (c) {
     var out = [];
     for (var i = 0; i < vals.length; i++) {
-      var v = String(vals[i][c]).trim();
+      var v = vals[i][c];
+      if (v instanceof Date) v = isoOf_(v);
+      v = String(v).trim();
       if (v) out.push(v);
     }
     return out;
   };
-  return { doctors: col(0), centers: col(1), timeslots: col(2) };
+  return { doctors: col(0), centers: col(1), timeslots: col(2), holidays: col(3) };
 }
 function writeColumn_(sh, colIndex, values) {
   for (var i = 0; i < values.length; i++) sh.getRange(i + 2, colIndex).setValue(values[i]);
@@ -414,4 +430,135 @@ function thaiMonthFromISO_(iso) {
 function doctorShort_(doctor) {
   // "นพ.ฐิติพงศ์  โนนน้อย  เลข ว. 79707" → "นพ.ฐิติพงศ์ โนนน้อย"
   return String(doctor).replace(/\s*เลข\s*ว\.?.*$/, '').replace(/\s+/g, ' ').trim();
+}
+function countPatients_(sh) {
+  var vals = sh.getRange(PATIENT_START_ROW, 2, PATIENT_MAX_ROWS, 1).getValues();
+  var n = 0;
+  for (var i = 0; i < vals.length; i++) if (String(vals[i][0]).trim() !== '') n++;
+  return n;
+}
+function isoFromThai_(thai) {
+  // "8 ส.ค. 2569" → "2026-08-08"
+  var m = String(thai).match(/(\d{1,2})\s+(\S+)\s+(\d{4})/);
+  var mi = THAI_MONTHS.indexOf(m[2]);
+  var y = Number(m[3]) - 543;
+  return y + '-' + ('0' + (mi + 1)).slice(-2) + '-' + ('0' + m[1]).slice(-2);
+}
+function monthlyFolder_() {
+  var props = PropertiesService.getScriptProperties();
+  var id = props.getProperty('MONTHLY_ID');
+  if (id && fileExists_(id)) return DriveApp.getFolderById(id);
+  var f = getOrCreateFolder_(DriveApp.getFolderById(ROOT_FOLDER_ID), 'หลักฐานการจ่ายเงิน');
+  props.setProperty('MONTHLY_ID', f.getId());
+  return f;
+}
+
+/** Rebuild one month+center tab of the payment-evidence spreadsheet from the Registry. */
+function updateMonthlyReport_(dateISO, center) {
+  var p = isoOf_(dateISO).split('-');
+  var y = Number(p[0]), mo = Number(p[1]);
+  var be = y + 543;
+  var fileName = 'หลักฐานการจ่ายเงิน_' + THAI_MONTHS[mo - 1] + ' ' + be;
+
+  // ensure Registry has the extended header
+  try { registrySheet_().getRange(1, 10, 1, 2).setValues([['patients', 'amount']]); } catch (e) {}
+
+  var folder = monthlyFolder_();
+  var it = folder.getFilesByName(fileName);
+  var ss;
+  if (it.hasNext()) {
+    ss = SpreadsheetApp.openById(it.next().getId());
+  } else {
+    ss = SpreadsheetApp.create(fileName);
+    DriveApp.getFileById(ss.getId()).moveTo(folder);
+  }
+  var sh = ss.getSheetByName(center) || ss.insertSheet(center);
+  // drop the default empty sheet once a real tab exists
+  var def = ss.getSheetByName('Sheet1') || ss.getSheetByName('ชีต1');
+  if (def && ss.getSheets().length > 1 && def.getName() !== center) ss.deleteSheet(def);
+
+  // ---- gather month data for this center from the Registry ----
+  var rows = registryRows_();
+  var doctors = [];           // ordered by first submission
+  var grid = {};              // doctor -> {day -> amount}
+  for (var i = 0; i < rows.length; i++) {
+    var r = rows[i];
+    if (r[7] !== 'submitted' || String(r[5]) !== center) continue;
+    var amt = Number(r[10]);
+    if (!amt) continue;       // old rows without amount data are skipped
+    var iso = r[1] ? isoOf_(r[1]) : isoFromThai_(String(r[2]));
+    var q = iso.split('-');
+    if (Number(q[0]) !== y || Number(q[1]) !== mo) continue;
+    var day = Number(q[2]);
+    var name = doctorShort_(String(r[4]));
+    if (doctors.indexOf(name) === -1) { doctors.push(name); grid[name] = {}; }
+    grid[name][day] = (grid[name][day] || 0) + amt;
+  }
+
+  // ---- rebuild the tab ----
+  var DAY_COLS = 31, COLS = 3 + DAY_COLS + 2; // ที่ | ชื่อ-สกุล | ตำแหน่ง | 1..31 | จำนวน | ผู้รับเงิน
+  sh.clear();
+  var maxRows = 5 + Math.max(doctors.length, 15);
+  sh.getRange(1, 1, maxRows, COLS).setFontFamily('Sarabun').setFontSize(11).setVerticalAlignment('middle');
+
+  sh.getRange(1, 1, 1, COLS).merge()
+    .setValue('หลักฐานการจ่ายเงินค่าตอบแทนการปฏิบัติงานนอกเวลาราชการและวันหยุดราชการ ' + center)
+    .setFontWeight('bold').setFontSize(13).setHorizontalAlignment('center');
+  sh.getRange(2, 1, 1, COLS).merge()
+    .setValue('ส่วนราชการ ' + HOSPITAL_NAME + ' ประจำเดือน' + THAI_MONTHS_FULL[mo - 1] + ' พ.ศ. ' + be)
+    .setFontWeight('bold').setHorizontalAlignment('center');
+  sh.getRange(3, 1, 1, COLS).merge()
+    .setValue('เบิกตามฎีกาที่ ......................... วันที่ .................. เดือน ................................ พ.ศ. ..................')
+    .setHorizontalAlignment('center');
+
+  sh.getRange(4, 1, 2, 1).merge().setValue('ที่');
+  sh.getRange(4, 2, 2, 1).merge().setValue('ชื่อ-สกุล');
+  sh.getRange(4, 3, 2, 1).merge().setValue('ตำแหน่ง');
+  sh.getRange(4, 4, 1, DAY_COLS).merge().setValue('วันที่');
+  sh.getRange(4, 4 + DAY_COLS, 2, 1).merge().setValue('จำนวน');
+  sh.getRange(4, 5 + DAY_COLS, 2, 1).merge().setValue('ผู้รับเงิน');
+  var dayNums = [[]];
+  for (var d = 1; d <= DAY_COLS; d++) dayNums[0].push(d);
+  sh.getRange(5, 4, 1, DAY_COLS).setValues(dayNums);
+  sh.getRange(4, 1, 2, COLS).setFontWeight('bold').setHorizontalAlignment('center');
+
+  // shade weekends + configured holidays
+  var holidays = readConfig_().holidays; // ISO yyyy-mm-dd strings
+  var daysInMonth = new Date(y, mo, 0).getDate();
+  for (var d2 = 1; d2 <= daysInMonth; d2++) {
+    var dow = new Date(y, mo - 1, d2).getDay();
+    var iso2 = y + '-' + ('0' + mo).slice(-2) + '-' + ('0' + d2).slice(-2);
+    if (dow === 0 || dow === 6 || holidays.indexOf(iso2) !== -1) {
+      sh.getRange(5, 3 + d2).setBackground('#c9c9c9');
+    }
+  }
+
+  // data rows
+  if (doctors.length) {
+    var data = [];
+    for (var k = 0; k < doctors.length; k++) {
+      var name2 = doctors[k];
+      var row = [k + 1, name2, 'น.พ.'];
+      var total = 0;
+      for (var d3 = 1; d3 <= DAY_COLS; d3++) {
+        var v = grid[name2][d3] || '';
+        if (v) total += v;
+        row.push(v);
+      }
+      row.push(total, '');
+      data.push(row);
+    }
+    sh.getRange(6, 1, data.length, COLS).setValues(data);
+    sh.getRange(6, 1, data.length, 1).setHorizontalAlignment('center');
+    sh.getRange(6, 4, data.length, DAY_COLS).setFontSize(8).setHorizontalAlignment('center').setNumberFormat('#,##0');
+    sh.getRange(6, 4 + DAY_COLS, data.length, 1).setNumberFormat('#,##0').setHorizontalAlignment('center');
+  }
+
+  // layout + borders
+  sh.setColumnWidth(1, 34); sh.setColumnWidth(2, 200); sh.setColumnWidth(3, 62);
+  for (var c = 4; c < 4 + DAY_COLS; c++) sh.setColumnWidth(c, 34);
+  sh.setColumnWidth(4 + DAY_COLS, 76); sh.setColumnWidth(5 + DAY_COLS, 84);
+  sh.getRange(4, 1, 2 + Math.max(doctors.length, 15), COLS).setBorder(true, true, true, true, true, true);
+
+  return ss.getUrl();
 }

@@ -226,6 +226,7 @@
       <h2>ส่งรายงานเรียบร้อย</h2>
       <p id="submitMsg"></p>
       <a class="link-btn" id="pdfLink" target="_blank" rel="noopener">เปิด PDF ↗</a>
+      <a class="link-btn hidden" id="reportLink" target="_blank" rel="noopener" style="margin-left:8px;background:var(--accent)">หลักฐานการจ่ายเงิน ↗</a>
       <p style="margin-top:16px"><button class="btn btn-ghost" onclick="resetSubmit()">ส่งรายงานอื่น</button></p>
     </div>
   </div>
@@ -402,6 +403,12 @@ function submitByUrl() {
       ? 'รายงานนี้ถูกส่งไปแล้ว — เปิด PDF เดิมได้เลย'
       : 'บันทึกไฟล์ ' + r.fileName + ' เข้า Drive เรียบร้อย';
     $('pdfLink').href = r.pdfUrl;
+    if (r.reportUrl) {
+      $('reportLink').href = r.reportUrl;
+      $('reportLink').classList.remove('hidden');
+    } else {
+      $('reportLink').classList.add('hidden');
+    }
     $('submitForm').classList.add('hidden');
     $('submitDone').classList.remove('hidden');
   }).catch(function (e) {
