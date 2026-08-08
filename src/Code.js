@@ -72,7 +72,16 @@ var PATIENT_START_ROW = 5;   // first patient row in template
 var PATIENT_MAX_ROWS  = 60;  // pre-numbered rows in template
 
 // ====== WEB APP ENTRY ======
-function doGet() {
+function doGet(e) {
+  // Admin escape hatch: <webAppUrl>?rebuild=1 regenerates every payment-evidence tab
+  // from the Registry (idempotent, safe to re-run).
+  if (e && e.parameter && e.parameter.rebuild === '1') {
+    var res;
+    try { res = rebuildMonthlyReports(); }
+    catch (err) { res = { error: String(err && err.message || err) }; }
+    return ContentService.createTextOutput(JSON.stringify(res))
+      .setMimeType(ContentService.MimeType.JSON);
+  }
   return HtmlService.createHtmlOutputFromFile('Index')
     .setTitle('รายงานตรวจรักษานอกเวลา')
     .addMetaTag('viewport', 'width=device-width, initial-scale=1')
