@@ -266,7 +266,7 @@ function submitReport(sheetIdOrUrl) {
 
     // Metadata: from Registry (app-created sheets) or parsed from the sheet header (pasted external sheets)
     var meta = reg
-      ? { dateThai: String(reg.row[2]), monthThai: thaiMonthFromISO_(String(reg.row[1])), doctor: String(reg.row[4]), center: String(reg.row[5]) }
+      ? { dateThai: String(reg.row[2]), monthThai: thaiMonthFromISO_(reg.row[1]), doctor: String(reg.row[4]), center: String(reg.row[5]) }
       : parseHeaderMeta_(sh);
 
     var lastRow = lastPatientRow_(sh);
@@ -433,7 +433,11 @@ function requireNonEmpty_(obj) {
  *  always normalise back to 'yyyy-MM-dd' before parsing. */
 function isoOf_(v) {
   if (v instanceof Date) return Utilities.formatDate(v, TZ, 'yyyy-MM-dd');
-  return String(v).trim();
+  var s = String(v).trim();
+  if (/^\d{4}-\d{2}-\d{2}/.test(s)) return s.slice(0, 10);
+  var d = new Date(s);                       // recovers a Date that was stringified upstream
+  if (!isNaN(d.getTime())) return Utilities.formatDate(d, TZ, 'yyyy-MM-dd');
+  return s;
 }
 function thaiDateFromISO_(iso) {
   var p = isoOf_(iso).split('-'); // yyyy-mm-dd
@@ -474,9 +478,43 @@ function monthlyFolder_() {
  * every month+center payment-evidence tab found in the Registry.
  * Run manually from the editor any time; safe to re-run.
  */
+/**
+ * Move PDFs out of any malformed month folder (e.g. "undefined NaN") into the
+ * correct PDF/{เดือน พ.ศ.}/{ศูนย์} folder, deriving the month from the file name.
+ */
+function repairPdfFolders_() {
+  var pdfRoot = DriveApp.getFolderById(PropertiesService.getScriptProperties().getProperty('PDF_ID'));
+  var moved = 0, repaired = [];
+  var months = pdfRoot.getFolders();
+  while (months.hasNext()) {
+    var mf = months.next();
+    if (!/undefined|NaN/i.test(mf.getName())) continue;
+    repaired.push(mf.getName());
+    var centers = mf.getFolders();
+    while (centers.hasNext()) {
+      var cf = centers.next();
+      var center = cf.getName();
+      var files = cf.getFiles();
+      while (files.hasNext()) {
+        var f = files.next();
+        var m = f.getName().match(/^(\d{1,2})\s+(\S+)\s+(\d{4})_/);   // "8 ส.ค. 2569_..."
+        if (!m || THAI_MONTHS.indexOf(m[2]) === -1) continue;
+        var target = getOrCreateFolder_(getOrCreateFolder_(pdfRoot, m[2] + ' ' + m[3]), center);
+        f.moveTo(target);
+        moved++;
+      }
+      if (!cf.getFiles().hasNext() && !cf.getFolders().hasNext()) cf.setTrashed(true);
+    }
+    if (!mf.getFolders().hasNext() && !mf.getFiles().hasNext()) mf.setTrashed(true);
+  }
+  return { movedFiles: moved, repairedFolders: repaired };
+}
+
 function rebuildMonthlyReports() {
   var sh = registrySheet_();
   sh.getRange(1, 10, 1, 2).setValues([['patients', 'amount']]);
+  var repair = { movedFiles: 0, repairedFolders: [] };
+  try { repair = repairPdfFolders_(); } catch (e) { repair.error = String(e && e.message || e); }
 
   // ---- backfill ----
   var rows = registryRows_();
@@ -514,7 +552,8 @@ function rebuildMonthlyReports() {
   Logger.log('Backfilled ' + filled + ' row(s), ' + missing + ' unreadable. Rebuilt ' +
              keys.length + ' tab(s): ' + keys.join(', '));
   for (var k = 0; k < keys.length; k++) Logger.log(keys[k] + ' -> ' + urls[keys[k]]);
-  return { filled: filled, missing: missing, tabs: keys.length };
+  return { filled: filled, missing: missing, tabs: keys.length,
+           movedPdfs: repair.movedFiles, repairedFolders: repair.repairedFolders };
 }
 
 /** Rebuild one month+center tab of the payment-evidence spreadsheet from the Registry. */
