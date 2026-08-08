@@ -97,6 +97,7 @@ function setup() {
   var archiveId = getOrCreateFolder_(root, 'Archive').getId();
   var pdfId     = getOrCreateFolder_(root, 'PDF').getId();
   var monthlyId = getOrCreateFolder_(root, 'หลักฐานการจ่ายเงิน').getId();
+  var poolId    = getOrCreateFolder_(root, 'Pool').getId();
 
   // Registry + Config spreadsheet
   var regId = props.getProperty('REGISTRY_ID');
@@ -124,7 +125,7 @@ function setup() {
 
   props.setProperties({
     PENDING_ID: pendingId, ARCHIVE_ID: archiveId, PDF_ID: pdfId,
-    MONTHLY_ID: monthlyId, REGISTRY_ID: regId, TEMPLATE_ID: tplId
+    MONTHLY_ID: monthlyId, POOL_ID: poolId, REGISTRY_ID: regId, TEMPLATE_ID: tplId
   });
   Logger.log('Setup complete. Template: https://docs.google.com/spreadsheets/d/' + tplId);
 }
@@ -200,10 +201,20 @@ function createReport(dateISO, timeSlot, doctor, center) {
 
   var lock = LockService.getScriptLock(); lock.waitLock(20000);
   try {
-    var tpl = DriveApp.getFileById(props.getProperty('TEMPLATE_ID'));
     var pending = DriveApp.getFolderById(props.getProperty('PENDING_ID'));
     var name = thaiDate + '_' + doctorShort_(doctor) + '_' + center;
-    var copy = tpl.makeCopy(name, pending);
+
+    // Fast path: grab a pre-made, pre-shared copy from the pool (rename+move only).
+    var copy = takeFromPool_();
+    var needShare = false;
+    if (copy) {
+      copy.setName(name);
+      copy.moveTo(pending);
+    } else {
+      var tpl = DriveApp.getFileById(props.getProperty('TEMPLATE_ID'));
+      copy = tpl.makeCopy(name, pending);   // cold path when pool is empty
+      needShare = true;
+    }
 
     var ss = SpreadsheetApp.openById(copy.getId());
     var sh = ss.getSheets()[0];
@@ -212,7 +223,7 @@ function createReport(dateISO, timeSlot, doctor, center) {
     sh.getRange('B3').setValue('ประจำวันที่ ' + thaiDate + ' เวลา ' + timeSlot);
     SpreadsheetApp.flush();
 
-    copy.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.EDIT);
+    if (needShare) copy.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.EDIT);
 
     registrySheet_().appendRow([
       copy.getId(), dateISO, thaiDate, timeSlot, doctor, center,
@@ -295,12 +306,6 @@ function submitReport(sheetIdOrUrl) {
     var pdfUrl = pdfFile.getUrl();
 
     if (reg) {
-      // app-owned sheet: archive it and lock to view-only
-      try {
-        var src = DriveApp.getFileById(sheetId);
-        src.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
-        src.moveTo(DriveApp.getFolderById(props.getProperty('ARCHIVE_ID')));
-      } catch (e) { /* non-fatal: PDF already filed */ }
       registrySheet_().getRange(reg.index, 8, 1, 4).setValues([['submitted', pdfUrl, patients, amount]]);
     } else {
       // external sheet: we can't move/lock a file we don't own — just record the submission
@@ -310,12 +315,56 @@ function submitReport(sheetIdOrUrl) {
       ]);
     }
 
-    // rebuild this month/center tab of the payment-evidence report (non-fatal on failure)
-    var reportUrl = '';
-    try { reportUrl = updateMonthlyReport_(reportISO, meta.center); } catch (e) { /* PDF already filed */ }
-
-    return { already: false, pdfUrl: pdfUrl, fileName: fileName, reportUrl: reportUrl };
+    // Archive + monthly-report rebuild are deferred: the client fires finalizeSubmit()
+    // in the background AFTER showing the success screen. ~5-6s the user never waits for.
+    return { already: false, pdfUrl: pdfUrl, fileName: fileName,
+             sheetId: sheetId, dateISO: reportISO, center: meta.center };
   } finally { lock.releaseLock(); }
+}
+
+/** Phase 2 of submit, fired by the browser after the success screen is visible.
+ *  Idempotent; the monthly report is derived from the Registry so a lost call
+ *  self-heals on the next submit or ?rebuild=1. */
+function finalizeSubmit(sheetId, dateISO, center) {
+  try {
+    var src = DriveApp.getFileById(String(sheetId));
+    src.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
+    src.moveTo(DriveApp.getFolderById(props_().getProperty('ARCHIVE_ID')));
+  } catch (e) { /* external sheet, or already archived */ }
+  var url = '';
+  try { url = updateMonthlyReport_(dateISO, center); } catch (e) {}
+  return { reportUrl: url };
+}
+
+// ====== SHEET POOL (pre-made template copies so create is rename+move, not copy) ======
+var POOL_TARGET = 3;
+function poolFolder_() {
+  var id = props_().getProperty('POOL_ID');
+  if (id && fileExists_(id)) return DriveApp.getFolderById(id);
+  var f = getOrCreateFolder_(DriveApp.getFolderById(ROOT_FOLDER_ID), 'Pool');
+  props_().setProperty('POOL_ID', f.getId());
+  return f;
+}
+function takeFromPool_() {
+  try {
+    var it = poolFolder_().getFiles();
+    return it.hasNext() ? it.next() : null;
+  } catch (e) { return null; }
+}
+/** Fired by the browser in the background (page load + after each create).
+ *  Tops the pool up to POOL_TARGET pre-shared blank copies; nobody waits on this. */
+function replenishPool() {
+  var pool = poolFolder_();
+  var count = 0, it = pool.getFiles();
+  while (it.hasNext()) { it.next(); count++; }
+  var made = 0;
+  var tpl = DriveApp.getFileById(props_().getProperty('TEMPLATE_ID'));
+  while (count + made < POOL_TARGET && made < 2) {   // ≤2 copies per call, loose cap
+    var f = tpl.makeCopy('POOL — เตรียมไว้ล่วงหน้า', pool);
+    f.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.EDIT);
+    made++;
+  }
+  return { pool: count + made };
 }
 
 /** Parse date/doctor/center from header rows of a pasted (non-registry) sheet. */

@@ -125,6 +125,19 @@
   }
   .empty { text-align: center; color: var(--muted); font-size: .92rem; padding: 18px 0; }
 
+  .prog { margin-top: 14px; }
+  .prog-track {
+    height: 6px; border-radius: 999px; background: #ececf4; overflow: hidden;
+  }
+  .prog-bar {
+    height: 100%; width: 2%; border-radius: 999px;
+    background: linear-gradient(90deg, var(--accent), var(--accent-2));
+  }
+  .prog-label {
+    margin-top: 8px; font-size: .85rem; color: var(--muted); text-align: center;
+    min-height: 1.2em;
+  }
+  .report-status { font-size: .85rem; color: var(--muted); margin-top: 10px; }
   .err-box {
     margin-top: 12px; padding: 13px 15px; border-radius: 14px;
     background: #fef2f2; border: 1.5px solid #fecaca; color: #b91c1c;
@@ -197,6 +210,10 @@
         <select id="fCenter"></select>
       </div>
       <button class="btn" id="btnCreate" onclick="createReport()">สร้างชีตรายงาน</button>
+      <div class="prog hidden" id="progCreate">
+        <div class="prog-track"><div class="prog-bar" id="progCreateBar"></div></div>
+        <div class="prog-label" id="progCreateLabel"></div>
+      </div>
     </div>
 
     <div id="createDone" class="success hidden">
@@ -218,6 +235,10 @@
           <button class="btn" id="btnPaste" onclick="submitByUrl()">ส่ง</button>
         </div>
         <div class="err-box hidden" id="submitErr"></div>
+        <div class="prog hidden" id="progSubmit">
+          <div class="prog-track"><div class="prog-bar" id="progSubmitBar"></div></div>
+          <div class="prog-label" id="progSubmitLabel"></div>
+        </div>
       </div>
     </div>
 
@@ -227,6 +248,7 @@
       <p id="submitMsg"></p>
       <a class="link-btn" id="pdfLink" target="_blank" rel="noopener">เปิด PDF ↗</a>
       <a class="link-btn hidden" id="reportLink" target="_blank" rel="noopener" style="margin-left:8px;background:var(--accent)">หลักฐานการจ่ายเงิน ↗</a>
+      <div class="report-status hidden" id="reportStatus">⏳ กำลังอัปเดตหลักฐานการจ่ายเงินอยู่เบื้องหลัง…</div>
       <p style="margin-top:16px"><button class="btn btn-ghost" onclick="resetSubmit()">ส่งรายงานอื่น</button></p>
     </div>
   </div>
@@ -252,6 +274,37 @@ function $(id) { return document.getElementById(id); }
 function toast(msg) {
   var t = $('toast'); t.textContent = msg; t.classList.add('show');
   setTimeout(function () { t.classList.remove('show'); }, 3500);
+}
+// Staged progress: labeled steps make the same wait FEEL far shorter than a blank spinner.
+var _progTimers = {};
+function startProgress(id, steps, estMs) {
+  var box = $(id), bar = $(id + 'Bar'), label = $(id + 'Label');
+  box.classList.remove('hidden');
+  bar.style.transition = 'none'; bar.style.width = '2%';
+  requestAnimationFrame(function () {
+    bar.style.transition = 'width ' + estMs + 'ms cubic-bezier(0.15, 0.6, 0.3, 1)';
+    bar.style.width = '92%';
+  });
+  var i = 0; label.textContent = steps[0];
+  clearInterval(_progTimers[id]);
+  _progTimers[id] = setInterval(function () {
+    i = Math.min(i + 1, steps.length - 1);
+    label.textContent = steps[i];
+  }, Math.max(1500, Math.floor(estMs / steps.length)));
+}
+function stopProgress(id) {
+  clearInterval(_progTimers[id]);
+  var bar = $(id + 'Bar');
+  bar.style.transition = 'width 250ms';
+  bar.style.width = '100%';
+  setTimeout(function () { $(id).classList.add('hidden'); bar.style.width = '2%'; }, 300);
+}
+function fireAndForget(fn) {
+  var args = Array.prototype.slice.call(arguments, 1);
+  try {
+    var runner = google.script.run.withFailureHandler(function () {});
+    runner[fn].apply(runner, args);
+  } catch (e) {}
 }
 function busy(btn, on, label) {
   btn.disabled = on;
@@ -328,6 +381,7 @@ gs('getInitData').then(function (d) {
   DOCTORS = d.doctors;
   renderDocList('');
   fillSelect($('fCenter'), d.centers);
+  fireAndForget('replenishPool');   // warm the sheet pool while nobody waits
 }).catch(function (e) { toast('โหลดข้อมูลไม่สำเร็จ: ' + e.message); });
 
 $('fDate').addEventListener('change', function () { $('thaiDate').textContent = thaiDate(this.value); });
@@ -377,14 +431,17 @@ function createReport() {
   if (!doctor) return toast('กรุณาเลือกชื่อแพทย์จากรายการ');
   var btn = $('btnCreate');
   busy(btn, true, 'สร้างชีตรายงาน');
+  startProgress('progCreate',
+    ['กำลังเตรียมชีตของคุณ…', 'กำลังใส่หัวรายงาน…', 'กำลังเปิดสิทธิ์การเข้าถึง…', 'ใกล้เสร็จแล้ว…'], 7000);
   gs('createReport', $('fDate').value, $('fTime').value, doctor, $('fCenter').value)
     .then(function (r) {
       $('sheetLink').href = r.sheetUrl;
       $('createForm').classList.add('hidden');
       $('createDone').classList.remove('hidden');
+      fireAndForget('replenishPool');   // make the next doctor's create fast too
     })
     .catch(function (e) { toast(e.message); })
-    .finally(function () { busy(btn, false, 'สร้างชีตรายงาน'); });
+    .finally(function () { busy(btn, false, 'สร้างชีตรายงาน'); stopProgress('progCreate'); });
 }
 function resetCreate() {
   $('createDone').classList.add('hidden');
@@ -398,24 +455,33 @@ function submitByUrl() {
   if (!url) return toast('กรุณาวางลิงก์ชีต');
   var btn = $('btnPaste'), label = btn.textContent;
   busy(btn, true, label);
+  startProgress('progSubmit',
+    ['กำลังตรวจสอบชีต…', 'กำลังนับรายชื่อผู้ป่วย…', 'กำลังสร้างไฟล์ PDF…', 'กำลังบันทึกเข้า Google Drive…'], 8000);
   gs('submitReport', url).then(function (r) {
     $('submitMsg').textContent = r.already
       ? 'รายงานนี้ถูกส่งไปแล้ว — เปิด PDF เดิมได้เลย'
       : 'บันทึกไฟล์ ' + r.fileName + ' เข้า Drive เรียบร้อย';
     $('pdfLink').href = r.pdfUrl;
-    if (r.reportUrl) {
-      $('reportLink').href = r.reportUrl;
-      $('reportLink').classList.remove('hidden');
-    } else {
-      $('reportLink').classList.add('hidden');
-    }
+    $('reportLink').classList.add('hidden');
     $('submitForm').classList.add('hidden');
     $('submitDone').classList.remove('hidden');
+    // Phase 2 runs in the background AFTER the user already sees success:
+    // archive the sheet + update the monthly payment report (~5s nobody waits for).
+    if (!r.already && r.sheetId && r.dateISO) {
+      $('reportStatus').classList.remove('hidden');
+      gs('finalizeSubmit', r.sheetId, r.dateISO, r.center).then(function (f) {
+        $('reportStatus').classList.add('hidden');
+        if (f && f.reportUrl) {
+          $('reportLink').href = f.reportUrl;
+          $('reportLink').classList.remove('hidden');
+        }
+      }).catch(function () { $('reportStatus').classList.add('hidden'); });
+    }
   }).catch(function (e) {
     var box = $('submitErr');
     box.textContent = e.message;
     box.classList.remove('hidden');
-  }).finally(function () { busy(btn, false, label); });
+  }).finally(function () { busy(btn, false, label); stopProgress('progSubmit'); });
 }
 function resetSubmit() {
   $('submitDone').classList.add('hidden');
