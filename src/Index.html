@@ -84,6 +84,18 @@
     background: var(--ink); color: #fff; text-decoration: none; font-weight: 600;
   }
 
+  .doc-list {
+    max-height: 210px; overflow-y: auto; margin-top: 10px;
+    border: 1.5px solid var(--line); border-radius: 14px; background: #fff;
+  }
+  .doc-item {
+    padding: 11px 14px; cursor: pointer; font-size: .95rem;
+    border-bottom: 1px solid var(--line);
+  }
+  .doc-item:last-child { border-bottom: 0; }
+  .doc-item:hover { background: #f5f5fb; }
+  .doc-item.sel { background: #efeffc; color: var(--accent); font-weight: 700; }
+  .doc-empty { padding: 14px; color: var(--muted); font-size: .9rem; text-align: center; }
   .adddoc { display: none; gap: 8px; margin-top: 10px; }
   .adddoc.show { display: flex; }
   .adddoc input { flex: 1; }
@@ -162,10 +174,14 @@
       </div>
       <div class="field">
         <label>ชื่อแพทย์</label>
-        <select id="fDoctor"></select>
+        <div class="row-gap">
+          <input type="text" id="docSearch" placeholder="🔍 พิมพ์เพื่อค้นหาชื่อแพทย์…" autocomplete="off">
+          <button class="btn btn-ghost" type="button" onclick="toggleAddDoc()">＋ เพิ่มชื่อ</button>
+        </div>
+        <div class="doc-list" id="docList"></div>
         <div class="adddoc" id="addDocBox">
           <input type="text" id="newDoctor" placeholder="เช่น นพ.สมชาย ใจดี เลข ว. 12345">
-          <button class="btn" onclick="saveDoctor()">บันทึก</button>
+          <button class="btn" type="button" onclick="saveDoctor()">บันทึก</button>
         </div>
       </div>
       <div class="field">
@@ -254,6 +270,40 @@ function fillSelect(sel, items, extra) {
   }
 }
 
+// ---- doctor picker (search filter + list) ----
+var DOCTORS = [];
+var selectedDoctor = '';
+
+function renderDocList(filter) {
+  var box = $('docList');
+  box.innerHTML = '';
+  var q = (filter || '').trim().toLowerCase();
+  var shown = DOCTORS.filter(function (d) { return !q || d.toLowerCase().indexOf(q) !== -1; });
+  if (!shown.length) {
+    var e = document.createElement('div');
+    e.className = 'doc-empty';
+    e.textContent = 'ไม่พบชื่อ — กดปุ่ม "＋ เพิ่มชื่อ" เพื่อเพิ่มแพทย์ใหม่';
+    box.appendChild(e);
+    return;
+  }
+  shown.forEach(function (d) {
+    var item = document.createElement('div');
+    item.className = 'doc-item' + (d === selectedDoctor ? ' sel' : '');
+    item.textContent = d;
+    item.onclick = function () {
+      selectedDoctor = d;
+      $('docSearch').value = d;
+      renderDocList('');
+    };
+    box.appendChild(item);
+  });
+}
+
+function toggleAddDoc() {
+  $('addDocBox').classList.toggle('show');
+  if ($('addDocBox').classList.contains('show')) $('newDoctor').focus();
+}
+
 // ---- init ----
 var INIT = null;
 gs('getInitData').then(function (d) {
@@ -262,13 +312,15 @@ gs('getInitData').then(function (d) {
   $('thaiDate').textContent = thaiDate(d.todayISO);
   fillSelect($('fTime'), d.timeslots);
   autoPickSlot(d.nowHour, d.timeslots);
-  fillSelect($('fDoctor'), d.doctors, true);
+  DOCTORS = d.doctors;
+  renderDocList('');
   fillSelect($('fCenter'), d.centers);
 }).catch(function (e) { toast('โหลดข้อมูลไม่สำเร็จ: ' + e.message); });
 
 $('fDate').addEventListener('change', function () { $('thaiDate').textContent = thaiDate(this.value); });
-$('fDoctor').addEventListener('change', function () {
-  $('addDocBox').classList.toggle('show', this.value === ADD_NEW);
+$('docSearch').addEventListener('input', function () {
+  if (this.value !== selectedDoctor) selectedDoctor = '';
+  renderDocList(this.value);
 });
 
 // ---- tabs ----
@@ -284,16 +336,24 @@ function saveDoctor() {
   var name = $('newDoctor').value.trim();
   if (!name) return toast('กรุณากรอกชื่อแพทย์');
   gs('addDoctor', name).then(function (doctors) {
-    fillSelect($('fDoctor'), doctors, true);
-    $('fDoctor').value = name;
+    DOCTORS = doctors;
+    selectedDoctor = name;
+    $('docSearch').value = name;
+    renderDocList('');
+    $('newDoctor').value = '';
     $('addDocBox').classList.remove('show');
     toast('บันทึกชื่อแพทย์แล้ว');
   }).catch(function (e) { toast(e.message); });
 }
 
 function createReport() {
-  var doctor = $('fDoctor').value;
-  if (doctor === ADD_NEW) return toast('กรุณาบันทึกชื่อแพทย์ใหม่ก่อน');
+  var doctor = selectedDoctor;
+  if (!doctor) {
+    var typed = $('docSearch').value.trim();
+    var exact = DOCTORS.filter(function (d) { return d === typed; });
+    if (exact.length) doctor = exact[0];
+  }
+  if (!doctor) return toast('กรุณาเลือกชื่อแพทย์จากรายการ');
   var btn = $('btnCreate');
   busy(btn, true, 'สร้างชีตรายงาน');
   gs('createReport', $('fDate').value, $('fTime').value, doctor, $('fCenter').value)
