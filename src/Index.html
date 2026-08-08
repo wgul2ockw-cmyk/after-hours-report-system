@@ -84,10 +84,16 @@
     background: var(--ink); color: #fff; text-decoration: none; font-weight: 600;
   }
 
+  .combo { position: relative; flex: 1; }
+  .combo input { width: 100%; }
   .doc-list {
-    max-height: 210px; overflow-y: auto; margin-top: 10px;
+    display: none;
+    position: absolute; top: calc(100% + 6px); left: 0; right: 0; z-index: 30;
+    max-height: 240px; overflow-y: auto;
     border: 1.5px solid var(--line); border-radius: 14px; background: #fff;
+    box-shadow: 0 10px 30px rgba(20,20,60,.12);
   }
+  .doc-list.open { display: block; }
   .doc-item {
     padding: 11px 14px; cursor: pointer; font-size: .95rem;
     border-bottom: 1px solid var(--line);
@@ -175,10 +181,12 @@
       <div class="field">
         <label>ชื่อแพทย์</label>
         <div class="row-gap">
-          <input type="text" id="docSearch" placeholder="🔍 พิมพ์เพื่อค้นหาชื่อแพทย์…" autocomplete="off">
+          <div class="combo">
+            <input type="text" id="docSearch" placeholder="เลือกชื่อแพทย์ ▾ (พิมพ์เพื่อค้นหา)" autocomplete="off">
+            <div class="doc-list" id="docList"></div>
+          </div>
           <button class="btn btn-ghost" type="button" onclick="toggleAddDoc()">＋ เพิ่มชื่อ</button>
         </div>
-        <div class="doc-list" id="docList"></div>
         <div class="adddoc" id="addDocBox">
           <input type="text" id="newDoctor" placeholder="เช่น นพ.สมชาย ใจดี เลข ว. 12345">
           <button class="btn" type="button" onclick="saveDoctor()">บันทึก</button>
@@ -294,10 +302,14 @@ function renderDocList(filter) {
       selectedDoctor = d;
       $('docSearch').value = d;
       renderDocList('');
+      closeDocList();
     };
     box.appendChild(item);
   });
 }
+
+function openDocList()  { $('docList').classList.add('open'); }
+function closeDocList() { $('docList').classList.remove('open'); }
 
 function toggleAddDoc() {
   $('addDocBox').classList.toggle('show');
@@ -321,6 +333,14 @@ $('fDate').addEventListener('change', function () { $('thaiDate').textContent = 
 $('docSearch').addEventListener('input', function () {
   if (this.value !== selectedDoctor) selectedDoctor = '';
   renderDocList(this.value);
+  openDocList();
+});
+$('docSearch').addEventListener('focus', function () {
+  renderDocList(this.value === selectedDoctor ? '' : this.value);
+  openDocList();
+});
+document.addEventListener('click', function (e) {
+  if (!e.target.closest('.combo')) closeDocList();
 });
 
 // ---- tabs ----

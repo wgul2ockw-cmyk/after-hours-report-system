@@ -397,12 +397,18 @@ function requireNonEmpty_(obj) {
     if (!String(obj[k] || '').trim()) throw new Error('ข้อมูลไม่ครบ: ' + k);
   }
 }
+/** Sheets auto-converts date-like strings to Date objects when stored —
+ *  always normalise back to 'yyyy-MM-dd' before parsing. */
+function isoOf_(v) {
+  if (v instanceof Date) return Utilities.formatDate(v, TZ, 'yyyy-MM-dd');
+  return String(v).trim();
+}
 function thaiDateFromISO_(iso) {
-  var p = String(iso).split('-'); // yyyy-mm-dd
+  var p = isoOf_(iso).split('-'); // yyyy-mm-dd
   return Number(p[2]) + ' ' + THAI_MONTHS[Number(p[1]) - 1] + ' ' + (Number(p[0]) + 543);
 }
 function thaiMonthFromISO_(iso) {
-  var p = String(iso).split('-');
+  var p = isoOf_(iso).split('-');
   return THAI_MONTHS[Number(p[1]) - 1] + ' ' + (Number(p[0]) + 543);
 }
 function doctorShort_(doctor) {
