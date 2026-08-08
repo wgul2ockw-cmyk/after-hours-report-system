@@ -269,9 +269,10 @@ function submitReport(sheetIdOrUrl) {
       ? { dateThai: String(reg.row[2]), monthThai: thaiMonthFromISO_(reg.row[1]), doctor: String(reg.row[4]), center: String(reg.row[5]) }
       : parseHeaderMeta_(sh);
 
-    var lastRow = lastPatientRow_(sh);
+    var stats = patientStats_(sh);   // one read: last row + count together
+    var lastRow = stats.lastRow;
     if (lastRow < PATIENT_START_ROW) throw new Error('ยังไม่มีรายชื่อผู้ป่วยในชีต — กรอกข้อมูลก่อนส่ง');
-    var patients = countPatients_(sh);
+    var patients = stats.count;
     var amount = patients * RATE_PER_PATIENT;
     var reportISO = reg ? isoOf_(reg.row[1]) : isoFromThai_(meta.dateThai);
 
@@ -368,12 +369,19 @@ function extractSheetId_(input) {
   return null;
 }
 
-function registrySheet_() {
-  return SpreadsheetApp.openById(PropertiesService.getScriptProperties().getProperty('REGISTRY_ID')).getSheetByName('Registry');
+// Per-execution memoization: opening a spreadsheet or reading properties is a
+// network round-trip; do each at most once per request.
+var _memo = {};
+function props_() {
+  if (!_memo.props) _memo.props = PropertiesService.getScriptProperties();
+  return _memo.props;
 }
-function configSheet_() {
-  return SpreadsheetApp.openById(PropertiesService.getScriptProperties().getProperty('REGISTRY_ID')).getSheetByName('Config');
+function regSS_() {
+  if (!_memo.regSS) _memo.regSS = SpreadsheetApp.openById(props_().getProperty('REGISTRY_ID'));
+  return _memo.regSS;
 }
+function registrySheet_() { return regSS_().getSheetByName('Registry'); }
+function configSheet_()   { return regSS_().getSheetByName('Config'); }
 var REGISTRY_COLS = 11; // A..K : sheetId..pdfUrl, patients, amount
 function registryRows_() {
   var sh = registrySheet_();
@@ -450,6 +458,14 @@ function thaiMonthFromISO_(iso) {
 function doctorShort_(doctor) {
   // "นพ.ฐิติพงศ์  โนนน้อย  เลข ว. 79707" → "นพ.ฐิติพงศ์ โนนน้อย"
   return String(doctor).replace(/\s*เลข\s*ว\.?.*$/, '').replace(/\s+/g, ' ').trim();
+}
+function patientStats_(sh) {
+  var vals = sh.getRange(PATIENT_START_ROW, 2, PATIENT_MAX_ROWS, 1).getValues();
+  var last = PATIENT_START_ROW - 1, count = 0;
+  for (var i = 0; i < vals.length; i++) {
+    if (String(vals[i][0]).trim() !== '') { last = PATIENT_START_ROW + i; count++; }
+  }
+  return { lastRow: last, count: count };
 }
 function countPatients_(sh) {
   var vals = sh.getRange(PATIENT_START_ROW, 2, PATIENT_MAX_ROWS, 1).getValues();
@@ -556,39 +572,53 @@ function rebuildMonthlyReports() {
            movedPdfs: repair.movedFiles, repairedFolders: repair.repairedFolders };
 }
 
-/** Rebuild one month+center tab of the payment-evidence spreadsheet from the Registry. */
+/** Rebuild one month+center tab of the payment-evidence spreadsheet from the Registry.
+ *  Fast path: the tab's formatting (title, merges, widths, shading, borders) is built
+ *  ONCE when the tab is created; later calls only rewrite the data block (3 API calls). */
+var MREP_DAY_COLS = 31, MREP_COLS = 3 + 31 + 2, MREP_DATA_ROWS = 60;
+
 function updateMonthlyReport_(dateISO, center) {
   var p = isoOf_(dateISO).split('-');
   var y = Number(p[0]), mo = Number(p[1]);
   var be = y + 543;
   var fileName = 'หลักฐานการจ่ายเงิน_' + THAI_MONTHS[mo - 1] + ' ' + be;
 
-  // ensure Registry has the extended header
-  try { registrySheet_().getRange(1, 10, 1, 2).setValues([['patients', 'amount']]); } catch (e) {}
-
-  var folder = monthlyFolder_();
-  var it = folder.getFilesByName(fileName);
-  var ss;
-  if (it.hasNext()) {
-    ss = SpreadsheetApp.openById(it.next().getId());
+  // locate the month spreadsheet — file id cached in properties to skip Drive search
+  var cacheKey = 'MREP_' + y + '-' + ('0' + mo).slice(-2);
+  var ssId = props_().getProperty(cacheKey);
+  var ss = null;
+  if (ssId && fileExists_(ssId)) {
+    ss = SpreadsheetApp.openById(ssId);
   } else {
-    ss = SpreadsheetApp.create(fileName);
-    DriveApp.getFileById(ss.getId()).moveTo(folder);
+    var folder = monthlyFolder_();
+    var it = folder.getFilesByName(fileName);
+    if (it.hasNext()) {
+      ss = SpreadsheetApp.openById(it.next().getId());
+    } else {
+      ss = SpreadsheetApp.create(fileName);
+      DriveApp.getFileById(ss.getId()).moveTo(folder);
+    }
+    props_().setProperty(cacheKey, ss.getId());
   }
-  var sh = ss.getSheetByName(center) || ss.insertSheet(center);
-  // drop the default empty sheet once a real tab exists
-  var def = ss.getSheetByName('Sheet1') || ss.getSheetByName('ชีต1');
-  if (def && ss.getSheets().length > 1 && def.getName() !== center) ss.deleteSheet(def);
 
-  // ---- gather month data for this center from the Registry ----
+  var sh = ss.getSheetByName(center);
+  if (!sh) {
+    sh = ss.insertSheet(center);
+    formatMonthlyTab_(sh, center, y, mo, be);
+    var def = ss.getSheetByName('Sheet1') || ss.getSheetByName('ชีต1');
+    if (def && ss.getSheets().length > 1 && def.getName() !== center) ss.deleteSheet(def);
+  } else if (String(sh.getRange('A4').getValue()) !== 'ที่') {
+    formatMonthlyTab_(sh, center, y, mo, be);   // tab exists but was never formatted
+  }
+
+  // ---- gather month data for this center from the Registry (one read) ----
   var rows = registryRows_();
-  var doctors = [];           // ordered by first submission
-  var grid = {};              // doctor -> {day -> amount}
+  var doctors = [], grid = {};
   for (var i = 0; i < rows.length; i++) {
     var r = rows[i];
     if (r[7] !== 'submitted' || String(r[5]) !== center) continue;
     var amt = Number(r[10]);
-    if (!amt) continue;       // old rows without amount data are skipped
+    if (!amt) continue;
     var iso = r[1] ? isoOf_(r[1]) : isoFromThai_(String(r[2]));
     var q = iso.split('-');
     if (Number(q[0]) !== y || Number(q[1]) !== mo) continue;
@@ -598,11 +628,31 @@ function updateMonthlyReport_(dateISO, center) {
     grid[name][day] = (grid[name][day] || 0) + amt;
   }
 
-  // ---- rebuild the tab ----
-  var DAY_COLS = 31, COLS = 3 + DAY_COLS + 2; // ที่ | ชื่อ-สกุล | ตำแหน่ง | 1..31 | จำนวน | ผู้รับเงิน
+  // ---- data block: one clear + one write ----
+  var data = [];
+  for (var k = 0; k < doctors.length; k++) {
+    var name2 = doctors[k];
+    var row = [k + 1, name2, 'น.พ.'];
+    var total = 0;
+    for (var d = 1; d <= MREP_DAY_COLS; d++) {
+      var v = grid[name2][d] || '';
+      if (v) total += v;
+      row.push(v);
+    }
+    row.push(total, '');
+    data.push(row);
+  }
+  sh.getRange(6, 1, MREP_DATA_ROWS, MREP_COLS).clearContent();
+  if (data.length) sh.getRange(6, 1, data.length, MREP_COLS).setValues(data);
+  return ss.getUrl();
+}
+
+/** One-time static formatting for a month/center tab — every call here is batched. */
+function formatMonthlyTab_(sh, center, y, mo, be) {
+  var COLS = MREP_COLS, DAY_COLS = MREP_DAY_COLS;
   sh.clear();
-  var maxRows = 5 + Math.max(doctors.length, 15);
-  sh.getRange(1, 1, maxRows, COLS).setFontFamily('Sarabun').setFontSize(11).setVerticalAlignment('middle');
+  sh.getRange(1, 1, 5 + MREP_DATA_ROWS, COLS)
+    .setFontFamily('Sarabun').setFontSize(11).setVerticalAlignment('middle');
 
   sh.getRange(1, 1, 1, COLS).merge()
     .setValue('หลักฐานการจ่ายเงินค่าตอบแทนการปฏิบัติงานนอกเวลาราชการและวันหยุดราชการ ' + center)
@@ -625,43 +675,29 @@ function updateMonthlyReport_(dateISO, center) {
   sh.getRange(5, 4, 1, DAY_COLS).setValues(dayNums);
   sh.getRange(4, 1, 2, COLS).setFontWeight('bold').setHorizontalAlignment('center');
 
-  // shade weekends + configured holidays
-  var holidays = readConfig_().holidays; // ISO yyyy-mm-dd strings
+  // weekend + holiday shading: ONE setBackgrounds call
+  var holidays = readConfig_().holidays;
   var daysInMonth = new Date(y, mo, 0).getDate();
-  for (var d2 = 1; d2 <= daysInMonth; d2++) {
-    var dow = new Date(y, mo - 1, d2).getDay();
-    var iso2 = y + '-' + ('0' + mo).slice(-2) + '-' + ('0' + d2).slice(-2);
-    if (dow === 0 || dow === 6 || holidays.indexOf(iso2) !== -1) {
-      sh.getRange(5, 3 + d2).setBackground('#c9c9c9');
+  var bg = [[]];
+  for (var d2 = 1; d2 <= DAY_COLS; d2++) {
+    var shade = false;
+    if (d2 <= daysInMonth) {
+      var dow = new Date(y, mo - 1, d2).getDay();
+      var iso2 = y + '-' + ('0' + mo).slice(-2) + '-' + ('0' + d2).slice(-2);
+      shade = (dow === 0 || dow === 6 || holidays.indexOf(iso2) !== -1);
     }
+    bg[0].push(shade ? '#c9c9c9' : null);
   }
+  sh.getRange(5, 4, 1, DAY_COLS).setBackgrounds(bg);
 
-  // data rows
-  if (doctors.length) {
-    var data = [];
-    for (var k = 0; k < doctors.length; k++) {
-      var name2 = doctors[k];
-      var row = [k + 1, name2, 'น.พ.'];
-      var total = 0;
-      for (var d3 = 1; d3 <= DAY_COLS; d3++) {
-        var v = grid[name2][d3] || '';
-        if (v) total += v;
-        row.push(v);
-      }
-      row.push(total, '');
-      data.push(row);
-    }
-    sh.getRange(6, 1, data.length, COLS).setValues(data);
-    sh.getRange(6, 1, data.length, 1).setHorizontalAlignment('center');
-    sh.getRange(6, 4, data.length, DAY_COLS).setFontSize(8).setHorizontalAlignment('center').setNumberFormat('#,##0');
-    sh.getRange(6, 4 + DAY_COLS, data.length, 1).setNumberFormat('#,##0').setHorizontalAlignment('center');
-  }
-
-  // layout + borders
+  // widths: batched (setColumnWidths = one call for all 31 day columns)
   sh.setColumnWidth(1, 34); sh.setColumnWidth(2, 200); sh.setColumnWidth(3, 62);
-  for (var c = 4; c < 4 + DAY_COLS; c++) sh.setColumnWidth(c, 34);
+  sh.setColumnWidths(4, DAY_COLS, 34);
   sh.setColumnWidth(4 + DAY_COLS, 76); sh.setColumnWidth(5 + DAY_COLS, 84);
-  sh.getRange(4, 1, 2 + Math.max(doctors.length, 15), COLS).setBorder(true, true, true, true, true, true);
 
-  return ss.getUrl();
+  // borders + number formats + alignment for the WHOLE data grid, once
+  sh.getRange(4, 1, 2 + MREP_DATA_ROWS, COLS).setBorder(true, true, true, true, true, true);
+  sh.getRange(6, 1, MREP_DATA_ROWS, 1).setHorizontalAlignment('center');
+  sh.getRange(6, 4, MREP_DATA_ROWS, DAY_COLS).setFontSize(8).setHorizontalAlignment('center').setNumberFormat('#,##0');
+  sh.getRange(6, 4 + DAY_COLS, MREP_DATA_ROWS, 1).setNumberFormat('#,##0').setHorizontalAlignment('center');
 }
