@@ -75,6 +75,13 @@ var PATIENT_MAX_ROWS  = 60;  // pre-numbered rows in template
 function doGet(e) {
   // Admin escape hatch: <webAppUrl>?rebuild=1 regenerates every payment-evidence tab
   // from the Registry (idempotent, safe to re-run).
+  if (e && e.parameter && e.parameter.pack) {
+    var pres;
+    try { pres = rebuildAllPrintPacks(e.parameter.pack === '1' ? null : e.parameter.pack); }
+    catch (perr) { pres = { error: String(perr && perr.message || perr) }; }
+    return ContentService.createTextOutput(JSON.stringify(pres))
+      .setMimeType(ContentService.MimeType.JSON);
+  }
   if (e && e.parameter && e.parameter.rebuild === '1') {
     var res;
     try { res = rebuildMonthlyReports(); }
@@ -333,7 +340,148 @@ function finalizeSubmit(sheetId, dateISO, center) {
   } catch (e) { /* external sheet, or already archived */ }
   var url = '';
   try { url = updateMonthlyReport_(dateISO, center); } catch (e) {}
-  return { reportUrl: url };
+  var packUrl = '';
+  try {
+    addToPrintPack_(sheetId, dateISO, center);
+    var pp = isoOf_(dateISO).split('-');
+    packUrl = exportPackPdf_(Number(pp[0]), Number(pp[1]), center);
+  } catch (e) {}
+  return { reportUrl: url, packUrl: packUrl };
+}
+
+// ====== PRINT PACK: รวม PDF ทั้งเดือนของแต่ละศูนย์ เรียงตามวันที่ ======
+// Apps Script has no PDF-merge API (pdf-lib needs Promises, which Apps Script never
+// resolves). Instead we keep ONE spreadsheet per month+center holding each day's report
+// as its own tab, then export the WHOLE spreadsheet — Sheets starts a new page per tab,
+// producing a single ordered PDF. Adding a report is incremental (one tab), not a rebuild.
+
+function packsFolder_() {
+  var id = props_().getProperty('PACKS_ID');
+  if (id && fileExists_(id)) return DriveApp.getFolderById(id);
+  var f = getOrCreateFolder_(DriveApp.getFolderById(ROOT_FOLDER_ID), 'Packs (ระบบใช้งาน — อย่าลบ)');
+  props_().setProperty('PACKS_ID', f.getId());
+  return f;
+}
+function shortCenter_(center) {
+  var s = String(center).replace(/^(ศูนย์แพทย์|ศูนย์สุขภาพชุมชนเมือง|ศูนย์สุขภาพชุมชน|หน่วยบริการปฐมภูมิ|รพ\.)\s*/, '').trim();
+  return s || String(center);
+}
+function packKey_(y, mo, center) { return 'PACK_' + y + '-' + ('0' + mo).slice(-2) + '_' + center; }
+
+function printPackSS_(y, mo, center) {
+  var key = packKey_(y, mo, center);
+  var id = props_().getProperty(key);
+  if (id && fileExists_(id)) return SpreadsheetApp.openById(id);
+  var ss = SpreadsheetApp.create('PACK ' + shortCenter_(center) + ' ' + THAI_MONTHS[mo - 1] + ' ' + (y + 543));
+  DriveApp.getFileById(ss.getId()).moveTo(packsFolder_());
+  props_().setProperty(key, ss.getId());
+  return ss;
+}
+
+/** Add one day's report as a tab, placed in date order. Tab name encodes day + sheet id
+ *  so re-running is a no-op (never duplicates). Tab names are not printed. */
+function addToPrintPack_(sheetId, dateISO, center) {
+  var p = isoOf_(dateISO).split('-');
+  var y = Number(p[0]), mo = Number(p[1]), day = Number(p[2]);
+  var ss = printPackSS_(y, mo, center);
+  var tab = ('0' + day).slice(-2) + '_' + String(sheetId).slice(-5);
+  if (ss.getSheetByName(tab)) return ss;                 // already in the pack
+
+  var srcSheet = SpreadsheetApp.openById(String(sheetId)).getSheets()[0];
+  var copy = srcSheet.copyTo(ss);
+  copy.setName(tab);
+
+  var lastRow = lastPatientRow_(copy);                   // drop unused rows so no blank pages
+  if (lastRow >= PATIENT_START_ROW && copy.getMaxRows() > lastRow) {
+    copy.deleteRows(lastRow + 1, copy.getMaxRows() - lastRow);
+  }
+  if (copy.getMaxColumns() > 5) copy.deleteColumns(6, copy.getMaxColumns() - 5);  // hide tracking col
+
+  var def = ss.getSheetByName('Sheet1') || ss.getSheetByName('ชีต1');
+  if (def && ss.getSheets().length > 1) ss.deleteSheet(def);
+
+  var names = ss.getSheets().map(function (s) { return s.getName(); }).sort();
+  ss.setActiveSheet(copy);
+  ss.moveActiveSheet(names.indexOf(tab) + 1);            // 1-based position, date order
+  return ss;
+}
+
+/** Export the whole pack as ONE pdf into PDF/{เดือน พ.ศ.}/{ศูนย์}/, replacing the old version. */
+function exportPackPdf_(y, mo, center) {
+  var ss = printPackSS_(y, mo, center);
+  SpreadsheetApp.flush();
+  var sheets = ss.getSheets();
+  if (!sheets.length || (sheets.length === 1 && /^(Sheet1|ชีต1)$/.test(sheets[0].getName()))) return '';
+
+  var url = 'https://docs.google.com/spreadsheets/d/' + ss.getId() + '/export' +
+    '?format=pdf&size=A4&portrait=true&fitw=true&gridlines=false' +
+    '&sheetnames=false&printtitle=false&pagenumbers=false' +
+    '&top_margin=0.5&bottom_margin=0.5&left_margin=0.5&right_margin=0.5';
+  var res = UrlFetchApp.fetch(url, {
+    headers: { Authorization: 'Bearer ' + ScriptApp.getOAuthToken() }, muteHttpExceptions: true
+  });
+  if (res.getResponseCode() !== 200) throw new Error('รวม PDF ไม่สำเร็จ (HTTP ' + res.getResponseCode() + ')');
+
+  var monthFolder  = getOrCreateFolder_(DriveApp.getFolderById(props_().getProperty('PDF_ID')),
+                                        THAI_MONTHS[mo - 1] + ' ' + (y + 543));
+  var centerFolder = getOrCreateFolder_(monthFolder, center);
+
+  // "หนองแวง ส.ค. 69 อัพเดตล่าสุด 10 ส.ค.pdf"
+  var prefix = shortCenter_(center) + ' ' + THAI_MONTHS[mo - 1] + ' ' + String(y + 543).slice(-2) + ' อัพเดตล่าสุด';
+  var it = centerFolder.getFiles();
+  while (it.hasNext()) { var f = it.next(); if (f.getName().indexOf(prefix) === 0) f.setTrashed(true); }
+
+  var now = new Date();
+  var upD = Number(Utilities.formatDate(now, TZ, 'd'));
+  var upM = THAI_MONTHS[Number(Utilities.formatDate(now, TZ, 'M')) - 1].replace(/\.$/, '');
+  var name = prefix + ' ' + upD + ' ' + upM + '.pdf';
+  return centerFolder.createFile(res.getBlob().setName(name)).getUrl();
+}
+
+/** Full rebuild of one month+center pack from the Registry (repair / first-time backfill). */
+function rebuildPrintPack(dateISO, center) {
+  var p = isoOf_(dateISO).split('-');
+  var y = Number(p[0]), mo = Number(p[1]);
+  var key = packKey_(y, mo, center);
+  var old = props_().getProperty(key);
+  if (old && fileExists_(old)) { try { DriveApp.getFileById(old).setTrashed(true); } catch (e) {} }
+  props_().deleteProperty(key);
+
+  var rows = registryRows_(), items = [];
+  for (var i = 0; i < rows.length; i++) {
+    var r = rows[i];
+    if (r[7] !== 'submitted' || String(r[5]) !== center) continue;
+    var iso = r[1] ? isoOf_(r[1]) : isoFromThai_(String(r[2]));
+    var q = iso.split('-');
+    if (Number(q[0]) !== y || Number(q[1]) !== mo) continue;
+    items.push({ id: String(r[0]), iso: iso });
+  }
+  items.sort(function (a, b) { return a.iso < b.iso ? -1 : (a.iso > b.iso ? 1 : 0); });
+  var added = 0;
+  for (var k = 0; k < items.length; k++) {
+    try { addToPrintPack_(items[k].id, items[k].iso, center); added++; } catch (e) {}
+  }
+  return { center: center, reports: added, url: added ? exportPackPdf_(y, mo, center) : '' };
+}
+
+/** Rebuild every center's pack for the given month (default: current month). */
+function rebuildAllPrintPacks(monthISO) {
+  var base = monthISO ? isoOf_(monthISO + '-01') : Utilities.formatDate(new Date(), TZ, 'yyyy-MM-dd');
+  var p = base.split('-'), y = Number(p[0]), mo = Number(p[1]);
+  var rows = registryRows_(), centers = [];
+  for (var i = 0; i < rows.length; i++) {
+    var r = rows[i];
+    if (r[7] !== 'submitted') continue;
+    var iso = r[1] ? isoOf_(r[1]) : isoFromThai_(String(r[2]));
+    var q = iso.split('-');
+    if (Number(q[0]) !== y || Number(q[1]) !== mo) continue;
+    if (centers.indexOf(String(r[5])) === -1) centers.push(String(r[5]));
+  }
+  var out = [];
+  for (var c = 0; c < centers.length; c++) {
+    out.push(rebuildPrintPack(y + '-' + ('0' + mo).slice(-2) + '-01', centers[c]));
+  }
+  return { month: THAI_MONTHS[mo - 1] + ' ' + (y + 543), packs: out };
 }
 
 // ====== SHEET POOL (pre-made template copies so create is rename+move, not copy) ======

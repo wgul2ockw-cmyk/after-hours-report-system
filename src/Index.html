@@ -248,7 +248,8 @@
       <p id="submitMsg"></p>
       <a class="link-btn" id="pdfLink" target="_blank" rel="noopener">เปิด PDF ↗</a>
       <a class="link-btn hidden" id="reportLink" target="_blank" rel="noopener" style="margin-left:8px;background:var(--accent)">หลักฐานการจ่ายเงิน ↗</a>
-      <div class="report-status hidden" id="reportStatus">⏳ กำลังอัปเดตหลักฐานการจ่ายเงินอยู่เบื้องหลัง…</div>
+      <a class="link-btn hidden" id="packLink" target="_blank" rel="noopener" style="margin-left:8px;background:#0f766e">รวมทั้งเดือน (พิมพ์) ↗</a>
+      <div class="report-status hidden" id="reportStatus">⏳ กำลังอัปเดตหลักฐานการจ่ายเงิน + ไฟล์รวมพิมพ์อยู่เบื้องหลัง…</div>
       <p style="margin-top:16px"><button class="btn btn-ghost" onclick="resetSubmit()">ส่งรายงานอื่น</button></p>
     </div>
   </div>
@@ -463,6 +464,7 @@ function submitByUrl() {
       : 'บันทึกไฟล์ ' + r.fileName + ' เข้า Drive เรียบร้อย';
     $('pdfLink').href = r.pdfUrl;
     $('reportLink').classList.add('hidden');
+    $('packLink').classList.add('hidden');
     $('submitForm').classList.add('hidden');
     $('submitDone').classList.remove('hidden');
     // Phase 2 runs in the background AFTER the user already sees success:
@@ -474,6 +476,10 @@ function submitByUrl() {
         if (f && f.reportUrl) {
           $('reportLink').href = f.reportUrl;
           $('reportLink').classList.remove('hidden');
+        }
+        if (f && f.packUrl) {
+          $('packLink').href = f.packUrl;
+          $('packLink').classList.remove('hidden');
         }
       }).catch(function () { $('reportStatus').classList.add('hidden'); });
     }
